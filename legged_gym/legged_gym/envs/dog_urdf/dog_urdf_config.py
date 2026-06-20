@@ -10,17 +10,21 @@ class DogUrdfRoughCfg(LeggedRobotCfg):
         episode_length_s = 20
 
     class terrain(LeggedRobotCfg.terrain):
-        mesh_type = 'plane'
+        mesh_type = 'trimesh'
         measure_heights = False
         include_lin_vel = False
-        curriculum = False
+        curriculum = True
+        terrain_proportions = [0.4, 0.2, 0.15, 0.15, 0.1]
+        num_rows = 10
+        num_cols = 10
+        max_init_terrain_level = 3
 
     class commands(LeggedRobotCfg.commands):
         num_commands = 5
         resampling_time = 10.
         heading_command = True
         class ranges:
-            lin_vel_x = [-1.0, 1.0]
+            lin_vel_x = [-1.5, 1.5]
             lin_vel_y = [-0.5, 0.5]
             ang_vel_yaw = [-1.0, 1.0]
             heading = [-3.14, 3.14]

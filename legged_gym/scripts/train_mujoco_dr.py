@@ -14,8 +14,8 @@ from torch.distributions import Normal
 from rsl_rl.modules import ActorCritic
 
 MJCF_PATH = '/root/gpufree-data/workspace/legged_gym/resources/robots/dog_urdf/urdf/dog_with_meshes.mjcf'
-PRETRAINED = '/root/gpufree-data/workspace/legged_gym/weights/07_bc_full_dr.pt'
-SAVE_DIR = '/root/gpufree-data/workspace/legged_gym/logs/mujoco_bc_finetune'
+PRETRAINED = '/root/gpufree-data/workspace/legged_gym/weights/11_bc_highspeed.pt'
+SAVE_DIR = '/root/gpufree-data/workspace/legged_gym/logs/mujoco_highspeed'
 
 NUM_ENVS = 16
 SIM_DT = 0.002
@@ -50,7 +50,7 @@ CMD_SCALE = np.array([2.0, 2.0, 0.25], dtype=np.float32)
 
 DR = {
     'obs_latency_max': 0,
-    'action_latency_max': 0,
+    'action_latency_max': 1,
     'kp_range': [20.0, 20.0],
     'kd_range': [0.5, 0.5],
     'motor_offset_range': [0.0, 0.0],

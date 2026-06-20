@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from rsl_rl.modules import ActorCritic
 
-CKPT = '/root/gpufree-data/workspace/legged_gym/logs/rough_dog_urdf/Jun20_20-19-10_/model_8350.pt'
+CKPT = '/root/gpufree-data/workspace/legged_gym/logs/mujoco_highspeed/model_500.pt'
 DOG_MJCF = '/root/gpufree-data/workspace/legged_gym/resources/robots/dog_urdf/urdf/dog_with_meshes.mjcf'
 
 SIM_DT = 0.002
@@ -125,7 +125,7 @@ if __name__ == '__main__':
     except:
         renderer, cam = None, None
 
-    cmd = np.array([0.5, 0.0, 0.0], dtype=np.float32)
+    cmd = np.array([1.5, 0.0, 0.0], dtype=np.float32)
     height_target = 0.25
     action_prev = np.zeros(12, dtype=np.float32)
     obs_history = np.zeros(NUM_OBS, dtype=np.float32)
