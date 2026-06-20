@@ -1,4 +1,4 @@
-"""Deploy dog_urdf trained policy in MuJoCo with 4*tanh fix."""
+"""Deploy 46-dim frame-stacked policy in MuJoCo."""
 import os
 os.environ['MUJOCO_GL'] = 'egl'
 import sys
@@ -11,17 +11,20 @@ import numpy as np
 import torch
 from rsl_rl.modules import ActorCritic
 
-CKPT = '/root/gpufree-data/workspace/legged_gym/weights/04_mujoco_dr_latency.pt'
+CKPT = '/root/gpufree-data/workspace/legged_gym/logs/rough_dog_urdf/Jun20_20-19-10_/model_8350.pt'
 DOG_MJCF = '/root/gpufree-data/workspace/legged_gym/resources/robots/dog_urdf/urdf/dog_with_meshes.mjcf'
 
 SIM_DT = 0.002
 CONTROL_DEC = 10
 KP, KD = 20.0, 0.5
 ACTION_SCALE = 0.25
-LIN_VEL_SCALE, ANG_VEL_SCALE = 2.0, 0.25
+ANG_VEL_SCALE = 0.25
 DOF_POS_SCALE, DOF_VEL_SCALE = 1.0, 0.05
 CMD_SCALE = np.array([2.0, 2.0, 0.25], dtype=np.float32)
-NUM_OBS = 49
+NUM_SINGLE_OBS = 46
+FRAME_STACK = 3
+NUM_OBS = NUM_SINGLE_OBS * FRAME_STACK
+NUM_CRITIC_OBS = 53
 
 DEFAULT_ANGLES = np.array([
     0.1, 0.8, -1.5, 0.1, 0.8, -1.5, 0.1, 1.0, -1.5, 0.1, 1.0, -1.5,
@@ -43,10 +46,28 @@ def quat_rotate_inverse(quat, vel):
     return rot.reshape(3, 3).T @ vel
 
 
-def export_policy(ckpt_path, num_obs=NUM_OBS):
+def build_single_obs(d, action_prev, cmd, height_target):
+    quat = d.qpos[3:7]
+    ang_vel_body = quat_rotate_inverse(quat, d.qvel[3:6])
+    gravity = get_gravity(quat)
+    qj = d.qpos[7:]
+    dqj = d.qvel[6:]
+
+    obs = np.zeros(NUM_SINGLE_OBS, dtype=np.float32)
+    obs[:3] = ang_vel_body * ANG_VEL_SCALE
+    obs[3:6] = gravity
+    obs[6:9] = cmd * CMD_SCALE
+    obs[9] = height_target
+    obs[10:22] = (qj - DEFAULT_ANGLES) * DOF_POS_SCALE
+    obs[22:34] = dqj * DOF_VEL_SCALE
+    obs[34:46] = action_prev
+    return obs
+
+
+def export_policy(ckpt_path):
     checkpoint = torch.load(ckpt_path, map_location='cpu')
     model = ActorCritic(
-        num_actor_obs=num_obs, num_critic_obs=num_obs, num_actions=12,
+        num_actor_obs=NUM_OBS, num_critic_obs=NUM_CRITIC_OBS, num_actions=12,
         actor_hidden_dims=[512, 256, 128], critic_hidden_dims=[512, 256, 128],
         activation='elu', init_noise_std=1.0,
     )
@@ -60,27 +81,32 @@ def export_policy(ckpt_path, num_obs=NUM_OBS):
         def forward(self, x):
             return 4.0 * torch.tanh(self.actor(x))
 
-    wrapped = ActorWithTanh(copy.deepcopy(model.actor)).to('cpu')
-    traced = torch.jit.script(wrapped)
+    wrapped = ActorWithTanh(copy.deepcopy(model.actor))
     out_path = ckpt_path.replace('.pt', '_policy.pt')
-    torch.jit.save(traced, out_path)
-    print(f"Exported (with 4*tanh): {out_path}")
+    torch.jit.save(torch.jit.trace(wrapped, torch.zeros(1, NUM_OBS)), out_path)
+    print(f"Exported: {out_path}")
     return out_path
 
 
 if __name__ == '__main__':
-    print("=== Exporting dog_urdf policy ===")
-    policy_path = export_policy(CKPT)
-    policy = torch.jit.load(policy_path, map_location='cpu')
+    print("=== Deploying 46-dim frame-stacked policy ===")
+
+    if CKPT.endswith('_policy.pt'):
+        policy = torch.jit.load(CKPT, map_location='cpu')
+    else:
+        policy_path = export_policy(CKPT)
+        policy = torch.jit.load(policy_path, map_location='cpu')
     policy.eval()
 
-    print("\n=== Running on dog MJCF (cmd=[0.5, 0, 0]) ===")
     m = mujoco.MjModel.from_xml_path(DOG_MJCF)
     d = mujoco.MjData(m)
     m.opt.timestep = SIM_DT
     print(f"Model: nq={m.nq}, nv={m.nv}, nu={m.nu}, mass={sum(m.body_mass):.1f}kg")
 
+    d.qpos[2] = 0.25
+    d.qpos[3:7] = [1, 0, 0, 0]
     d.qpos[7:] = DEFAULT_ANGLES
+    d.qvel[:] = 0
     mujoco.mj_forward(m, d)
     for _ in range(500):
         tau = KP * (DEFAULT_ANGLES - d.qpos[7:]) + KD * (0 - d.qvel[6:])
@@ -102,7 +128,7 @@ if __name__ == '__main__':
     cmd = np.array([0.5, 0.0, 0.0], dtype=np.float32)
     height_target = 0.25
     action_prev = np.zeros(12, dtype=np.float32)
-    obs = np.zeros(NUM_OBS, dtype=np.float32)
+    obs_history = np.zeros(NUM_OBS, dtype=np.float32)
     target = DEFAULT_ANGLES.copy()
     frames, positions = [], []
     counter = 0
@@ -111,24 +137,13 @@ if __name__ == '__main__':
     for i in range(int(duration / SIM_DT)):
         counter += 1
         if counter % CONTROL_DEC == 0:
-            quat = d.qpos[3:7]
-            lin_vel_body = quat_rotate_inverse(quat, d.qvel[:3])
-            ang_vel_body = quat_rotate_inverse(quat, d.qvel[3:6])
-            gravity = get_gravity(quat)
-            qj = d.qpos[7:]
-            dqj = d.qvel[6:]
+            single = build_single_obs(d, action_prev, cmd, height_target)
+            obs_history[:NUM_SINGLE_OBS*(FRAME_STACK-1)] = obs_history[NUM_SINGLE_OBS:]
+            obs_history[NUM_SINGLE_OBS*(FRAME_STACK-1):] = single
 
-            obs[:3] = lin_vel_body * LIN_VEL_SCALE
-            obs[3:6] = ang_vel_body * ANG_VEL_SCALE
-            obs[6:9] = gravity
-            obs[9:12] = cmd * CMD_SCALE
-            obs[12] = height_target
-            obs[13:25] = (qj - DEFAULT_ANGLES) * DOF_POS_SCALE
-            obs[25:37] = dqj * DOF_VEL_SCALE
-            obs[37:49] = action_prev
-
+            obs_tensor = torch.from_numpy(obs_history).unsqueeze(0).float()
             with torch.no_grad():
-                act = policy(torch.from_numpy(obs).unsqueeze(0)).squeeze(0).numpy()
+                act = policy(obs_tensor).squeeze(0).numpy()
             target = act * ACTION_SCALE + DEFAULT_ANGLES
             action_prev[:] = act
 
@@ -149,15 +164,17 @@ if __name__ == '__main__':
     print(f"Distance: {dist:.2f} m")
     print(f"Avg height: {positions[:,2].mean():.3f} m")
     print(f"Min height: {positions[:,2].min():.3f} m")
-    fell = positions[:,2].min() < 0.10
-    print(f"Fell: {'YES' if fell else 'NO'}")
+    print(f"Fell: {'YES' if positions[:,2].min() < 0.10 else 'NO'}")
 
     if frames:
-        import cv2
-        out = '/tmp/dog_urdf_trained_mujoco.mp4'
-        h, w = frames[0].shape[:2]
-        writer = cv2.VideoWriter(out, cv2.VideoWriter_fourcc(*'mp4v'), 30, (w, h))
-        for f in frames:
-            writer.write(cv2.cvtColor(f, cv2.COLOR_RGB2BGR))
-        writer.release()
-        print(f"Video: {out}")
+        try:
+            import cv2
+            out_path = '/tmp/dog_urdf_trained_mujoco.mp4'
+            h, w = frames[0].shape[:2]
+            writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), 30, (w, h))
+            for f in frames:
+                writer.write(cv2.cvtColor(f, cv2.COLOR_RGB2BGR))
+            writer.release()
+            print(f"Video: {out_path}")
+        except ImportError:
+            pass

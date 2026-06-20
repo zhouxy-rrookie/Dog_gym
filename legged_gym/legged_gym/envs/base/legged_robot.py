@@ -174,6 +174,8 @@ class LeggedRobot(BaseTask):
         self.last_actions[env_ids] = 0.
         self.last_dof_vel[env_ids] = 0.
         self.feet_air_time[env_ids] = 0.
+        if self.frame_stack > 1:
+            self.obs_history_buf[env_ids] = 0.
         self.episode_length_buf[env_ids] = 0
         self.reset_buf[env_ids] = 1
         # fill extras
@@ -210,38 +212,44 @@ class LeggedRobot(BaseTask):
             self.episode_sums["termination"] += rew
     
     def compute_observations(self):
-        """ Computes observations
-        """
+        cmd_obs = [self.commands[:, :3] * self.commands_scale]
+        if self.cfg.commands.num_commands >= 5:
+            cmd_obs.append(self.commands[:, 4:5])
+
         if self.cfg.terrain.include_lin_vel:
-            cmd_obs = [self.commands[:, :3] * self.commands_scale]
-            if self.cfg.commands.num_commands >= 5:
-                cmd_obs.append(self.commands[:, 4:5])
-            self.obs_buf = torch.cat((  self.base_lin_vel * self.obs_scales.lin_vel,
-                                        self.base_ang_vel  * self.obs_scales.ang_vel,
-                                        self.projected_gravity,
-                                        *cmd_obs,
-                                        (self.dof_pos - self.default_dof_pos) * self.obs_scales.dof_pos,
-                                        self.dof_vel * self.obs_scales.dof_vel,
-                                        self.actions
-                                        ),dim=-1)
+            single_obs = torch.cat((self.base_lin_vel * self.obs_scales.lin_vel,
+                                    self.base_ang_vel * self.obs_scales.ang_vel,
+                                    self.projected_gravity, *cmd_obs,
+                                    (self.dof_pos - self.default_dof_pos) * self.obs_scales.dof_pos,
+                                    self.dof_vel * self.obs_scales.dof_vel,
+                                    self.actions), dim=-1)
         else:
-            cmd_obs = [self.commands[:, :3] * self.commands_scale]
-            if self.cfg.commands.num_commands >= 5:
-                cmd_obs.append(self.commands[:, 4:5])
-            self.obs_buf = torch.cat((  self.base_ang_vel  * self.obs_scales.ang_vel,
-                                        self.projected_gravity,
-                                        *cmd_obs,
-                                        (self.dof_pos - self.default_dof_pos) * self.obs_scales.dof_pos,
-                                        self.dof_vel * self.obs_scales.dof_vel,
-                                        self.actions
-                                        ),dim=-1)
-        # add perceptive inputs if not blind
+            single_obs = torch.cat((self.base_ang_vel * self.obs_scales.ang_vel,
+                                    self.projected_gravity, *cmd_obs,
+                                    (self.dof_pos - self.default_dof_pos) * self.obs_scales.dof_pos,
+                                    self.dof_vel * self.obs_scales.dof_vel,
+                                    self.actions), dim=-1)
+
         if self.cfg.terrain.measure_heights:
             heights = torch.clip(self.root_states[:, 2].unsqueeze(1) - 0.5 - self.measured_heights, -1, 1.) * self.obs_scales.height_measurements
-            self.obs_buf = torch.cat((self.obs_buf, heights), dim=-1)
-        # add noise if needed
+            single_obs = torch.cat((single_obs, heights), dim=-1)
+
         if self.add_noise:
-            self.obs_buf += (2 * torch.rand_like(self.obs_buf) - 1) * self.noise_scale_vec
+            single_obs += (2 * torch.rand_like(single_obs) - 1) * self.noise_scale_vec[:single_obs.shape[-1]]
+
+        if self.frame_stack > 1:
+            n = self.num_single_obs
+            self.obs_history_buf[:, :n*(self.frame_stack-1)] = self.obs_history_buf[:, n:].clone()
+            self.obs_history_buf[:, n*(self.frame_stack-1):] = single_obs
+            self.obs_buf = self.obs_history_buf
+        else:
+            self.obs_buf = single_obs
+
+        if self.num_privileged_obs is not None:
+            foot_contacts = (self.contact_forces[:, self.feet_indices, 2] > 1.).float()
+            self.privileged_obs_buf = torch.cat((single_obs,
+                                                 self.base_lin_vel * self.obs_scales.lin_vel,
+                                                 foot_contacts), dim=-1)
 
     def create_sim(self):
         """ Creates simulation, terrain and evironments
@@ -597,6 +605,13 @@ class LeggedRobot(BaseTask):
         if self.cfg.terrain.measure_heights:
             self.height_points = self._init_height_points()
         self.measured_heights = 0
+
+        self.num_single_obs = getattr(self.cfg.env, 'num_single_obs', self.num_obs)
+        self.frame_stack = getattr(self.cfg.env, 'frame_stack', 1)
+        if self.frame_stack > 1:
+            self.obs_history_buf = torch.zeros(self.num_envs, self.frame_stack * self.num_single_obs, dtype=torch.float, device=self.device, requires_grad=False)
+        if self.num_privileged_obs is not None:
+            self.privileged_obs_buf = torch.zeros(self.num_envs, self.num_privileged_obs, dtype=torch.float, device=self.device, requires_grad=False)
 
         # joint positions offsets and PD gains
         self.default_dof_pos = torch.zeros(self.num_dof, dtype=torch.float, device=self.device, requires_grad=False)

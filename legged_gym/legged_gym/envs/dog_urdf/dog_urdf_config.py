@@ -3,18 +3,17 @@ from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobot
 class DogUrdfRoughCfg(LeggedRobotCfg):
     class env(LeggedRobotCfg.env):
         num_envs = 4096
-        num_observations = 49
+        num_single_obs = 46
+        frame_stack = 3
+        num_observations = 46 * 3
+        num_privileged_obs = 53
         episode_length_s = 20
 
     class terrain(LeggedRobotCfg.terrain):
-        mesh_type = 'trimesh'
+        mesh_type = 'plane'
         measure_heights = False
-        include_lin_vel = True
-        curriculum = True
-        terrain_proportions = [0.4, 0.2, 0.15, 0.15, 0.1]
-        num_rows = 10
-        num_cols = 10
-        max_init_terrain_level = 3
+        include_lin_vel = False
+        curriculum = False
 
     class commands(LeggedRobotCfg.commands):
         num_commands = 5
@@ -54,16 +53,29 @@ class DogUrdfRoughCfg(LeggedRobotCfg):
 
     class domain_rand(LeggedRobotCfg.domain_rand):
         randomize_friction = True
-        friction_range = [0.5, 1.25]
+        friction_range = [0.4, 1.3]
         push_robots = True
-        push_interval_s = 15
-        max_push_vel_xy = 1.0
+        push_interval_s = 8
+        max_push_vel_xy = 0.5
         randomize_joint_armature = True
         joint_armature_range = [0.005, 0.02]
         randomize_joint_damping = True
         joint_damping_range = [0.8, 1.2]
         randomize_base_mass = True
         added_mass_range = [-1.0, 1.0]
+        randomize_pd_gains = True
+        stiffness_multiplier_range = [0.8, 1.2]
+        damping_multiplier_range = [0.8, 1.2]
+        randomize_base_com = True
+        added_base_com_range = [-0.03, 0.03]
+        randomize_calculated_torque = True
+        torque_multiplier_range = [0.9, 1.1]
+        randomize_motor_zero_offset = True
+        motor_zero_offset_range = [-0.02, 0.02]
+        randomize_link_mass = True
+        multiplied_link_mass_range = [0.9, 1.1]
+        randomize_joint_friction = True
+        joint_friction_range = [0.5, 1.5]
 
     class rewards(LeggedRobotCfg.rewards):
         soft_dof_pos_limit = 0.9
@@ -71,12 +83,14 @@ class DogUrdfRoughCfg(LeggedRobotCfg):
         class scales(LeggedRobotCfg.rewards.scales):
             torques = -0.0002
             dof_pos_limits = -5.0
-            orientation = -1.0
+            orientation = -5.0
             base_height = -1.0
             tracking_lin_vel = 1.5
             feet_air_time = 10.0
             foot_slip = -0.1
             action_rate = -0.05
+            ang_vel_xy = -0.5
+            lin_vel_z = -4.0
 
     class noise(LeggedRobotCfg.noise):
         noise_level = 1.0
@@ -84,6 +98,8 @@ class DogUrdfRoughCfg(LeggedRobotCfg):
 class DogUrdfRoughCfgPPO(LeggedRobotCfgPPO):
     class policy(LeggedRobotCfgPPO.policy):
         init_noise_std = 1.0
+        actor_hidden_dims = [512, 256, 128]
+        critic_hidden_dims = [512, 256, 128]
 
     class algorithm(LeggedRobotCfgPPO.algorithm):
         entropy_coef = 0.01
